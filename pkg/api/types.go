@@ -16,6 +16,11 @@ limitations under the License.
 
 package api
 
+import (
+	"os/exec"
+	"os"
+	"log"
+)
 // ContainerManifest corresponds to the Container Manifest format, documented at:
 // https://developers.google.com/compute/docs/containers/container_vms#container_manifest
 // This is used as the representation of Kubernete's workloads.
@@ -27,9 +32,67 @@ type ContainerManifest struct {
 }
 
 // Volume represents a named volume in a pod that may be accessed by any containers in the pod.
+// This struct should be used for Host Directory exposure
 type Volume struct {
 	Name string `yaml:"name" json:"name"`
+	// Type denotes how to interpret the Parameters
+	Type string `yaml:"type" json:"type"`
+	// All volumes should have a destination dir where they will be unpacked to
+	Path string `yaml:"path" json:"path"`
+	// Type-specific parameters. An empty interface might also be used here.
+	Parameters map[string]string `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 }
+
+type GitVolume struct {
+	// All external types share Volume properties, embedded structs represent this nicely.
+	Volume
+	// Source URL for repo.
+	Source string `yaml:"source" json:"source"`
+}
+
+// Basic HostDirectory interface. This is not explicitly used in the demo, but will likely be used
+// when HostDirectory mounts are no longer completely handled by VolumeMounts.
+type HostDirectory interface {
+	GetPath() string
+}
+
+type ExternalVolume interface {
+	Setup()
+	HostDirectory
+	Cleanup()
+}
+
+// Hacky setup, I'm sure there's a cleaner way to do this.
+// Setup in this scenario simply clones the repo in the desired dir.
+func (repo *GitVolume) Setup() {
+	err := os.Chdir(repo.Path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cmd := exec.Command("git", "clone", repo.Source)
+	err = cmd.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = cmd.Wait()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// Ignoring this for now, but declaring it to fulfill the interface definition.
+// Ideally this would remove the repository files from the path.
+func (repo *GitVolume) Cleanup() {}
+
+func (vol *Volume) GetPath() string {
+	return vol.Path
+}
+// Factory method for instantiating GitVolumes, interprets parameters accordingly.
+func NewGitVolume(volume Volume) *GitVolume {
+	source := volume.Parameters["source"]
+	return &GitVolume{volume, source}
+}
+
 
 // Port represents a network port in a single container
 type Port struct {
@@ -45,8 +108,6 @@ type VolumeMount struct {
 	Name      string `yaml:"name,omitempty" json:"name,omitempty"`
 	ReadOnly  bool   `yaml:"readOnly,omitempty" json:"readOnly,omitempty"`
 	MountPath string `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
-	// One of: "LOCAL" (local volume) or "HOST" (external mount from the host). Default: LOCAL.
-	MountType string `yaml:"mountType,omitempty" json:"mountType,omitempty"`
 }
 
 // EnvVar represents an environment variable present in a Container

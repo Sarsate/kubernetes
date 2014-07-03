@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"errors"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
@@ -75,6 +76,7 @@ type Kubelet struct {
 	SyncFrequency      time.Duration
 	HTTPCheckFrequency time.Duration
 	pullLock           sync.Mutex
+	extVolumes         map[string]api.ExternalVolume
 }
 
 type manifestUpdate struct {
@@ -282,15 +284,17 @@ func makeEnvironmentVariables(container *api.Container) []string {
 	return result
 }
 
-func makeVolumesAndBinds(container *api.Container) (map[string]struct{}, []string) {
+func makeLocalVolumesAndBinds(container *api.Container, podVolumes map[string]api.HostDirectory) (map[string]struct{}, []string) {
 	volumes := map[string]struct{}{}
 	binds := []string{}
 	for _, volume := range container.VolumeMounts {
 		var basePath string
-		if volume.MountType == "HOST" {
-			// Host volumes are not Docker volumes and are directly mounted from the host.
-			basePath = fmt.Sprintf("%s:%s", volume.MountPath, volume.MountPath)
+		if hostVol, ok := podVolumes[volume.Name]; ok {
+			// If the name of the volume references an external volume, then we perform just the
+			// host directory mount.
+			basePath = fmt.Sprintf("%s:%s", hostVol.GetPath(), volume.MountPath)
 		} else {
+			// Otherwise, this is a local mount.
 			volumes[volume.MountPath] = struct{}{}
 			basePath = fmt.Sprintf("/exports/%s:%s", volume.Name, volume.MountPath)
 		}
@@ -333,11 +337,11 @@ func makePortsAndBindings(container *api.Container) (map[docker.Port]struct{}, m
 	return exposedPorts, portBindings
 }
 
-func (kl *Kubelet) RunContainer(manifest *api.ContainerManifest, container *api.Container, netMode string) (name string, err error) {
+func (kl *Kubelet) RunContainer(manifest *api.ContainerManifest, container *api.Container, netMode string, podVolumes map[string]api.HostDirectory) (name string, err error) {
 	name = manifestAndContainerToDockerName(manifest, container)
 
 	envVariables := makeEnvironmentVariables(container)
-	volumes, binds := makeVolumesAndBinds(container)
+	volumes, binds := makeLocalVolumesAndBinds(container, podVolumes)
 	exposedPorts, portBindings := makePortsAndBindings(container)
 
 	opts := docker.CreateContainerOptions{
@@ -645,15 +649,46 @@ func (kl *Kubelet) createNetworkContainer(manifest *api.ContainerManifest) (stri
 		Ports:   ports,
 	}
 	kl.pullImage("busybox")
-	return kl.RunContainer(manifest, container, "")
+	return kl.RunContainer(manifest, container, "", nil)
 }
-
+// Creates/Prepares volumes for exposure. Adds external volumes, but not bare host directories to the kubelet map.
+// Returns a pod-layer map of all volumes (including host dirs) available to the pod specified by the manifest.
+func (kl *Kubelet) mountExternalVolumes(manifest *api.ContainerManifest) (map[string]api.HostDirectory, error) {
+	var extVolume api.ExternalVolume
+	podVolumes := make(map[string]api.HostDirectory)
+	if kl.extVolumes == nil {
+		kl.extVolumes = make(map[string]api.ExternalVolume)
+	}
+	for _, volume := range manifest.Volumes {
+		switch volume.Type {
+		case "GIT":
+			extVolume = api.NewGitVolume(volume)
+		case "HOST":
+			//Host volumes are not managed by the kubelet, but still need to be exposed to the pod.
+			podVolumes[volume.Name] = &volume
+			continue
+		default:
+			return nil, errors.New("Unsupported volume type.")
+		}
+		kl.extVolumes[volume.Name] = extVolume
+		podVolumes[volume.Name] = extVolume
+		extVolume.Setup()
+	}
+	return podVolumes, nil
+}
 // Sync the configured list of containers (desired state) with the host current state
 func (kl *Kubelet) SyncManifests(config []api.ContainerManifest) error {
 	log.Printf("Desired: %#v", config)
 	var err error
 	desired := map[string]bool{}
 	for _, manifest := range config {
+		// Prepare and grab the volumes availble to the pod.
+		// We will want to add a check to prevent attempting volumes that are already mounted.
+		podVolumes, err := kl.mountExternalVolumes(&manifest)
+		if err != nil {
+			log.Printf("Failed to build volumes. (%#v)  Skipping container %s", err, manifest.Id)
+			continue
+		}
 		netName, exists, err := kl.networkContainerExists(&manifest)
 		if err != nil {
 			log.Printf("Failed to introspect network container. (%#v)  Skipping container %s", err, manifest.Id)
@@ -685,7 +720,7 @@ func (kl *Kubelet) SyncManifests(config []api.ContainerManifest) error {
 				}
 				// netName has the '/' prefix, so slice it off
 				networkContainer := netName[1:]
-				actualName, err = kl.RunContainer(&manifest, &element, "container:"+networkContainer)
+				actualName, err = kl.RunContainer(&manifest, &element, "container:"+networkContainer, podVolumes)
 				// For some reason, list gives back names that start with '/'
 				actualName = "/" + actualName
 

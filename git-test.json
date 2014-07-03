@@ -1,0 +1,43 @@
+{
+  "id": "shell",
+  "desiredState": {
+    "manifest": {
+      "volumes": [{
+        "name": "data",
+        "type": "GIT",
+        "path": "/var/kubelet",
+        "parameters":{
+          "source":"http://github.com/Sarsate/kubernetes.git"
+        }
+      },
+      {
+        "name": "host",
+        "type": "HOST",
+        "path": "/tmp/dir"
+      }],
+      "containers": [{
+        "name": "master",
+        "image": "dockerfile/nginx",
+        "ports": [{
+          "containerPort": 80,
+          "hostPort": 8080,
+        }],
+        "volumeMounts": [{
+          "name": "data",
+          "mountPath": "/var/kubelet",
+          "readOnly": "false",
+        },
+        {
+          "name": "host",
+          "mountPath": "/home/host",
+          "readOnly": "false"
+        }],
+
+      }]
+    }
+  },
+  "labels": {
+    "name": "shell"
+  }
+}
+
