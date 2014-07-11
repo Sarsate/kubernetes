@@ -36,6 +36,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/tools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/volumes"
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
@@ -92,6 +93,7 @@ type Kubelet struct {
 	HTTPCheckFrequency time.Duration
 	pullLock           sync.Mutex
 	HealthChecker      HealthChecker
+	extVolumes         map[string]volumes.ExternalVolume
 }
 
 type manifestUpdate struct {
@@ -305,14 +307,14 @@ func makeEnvironmentVariables(container *api.Container) []string {
 	return result
 }
 
-func makeVolumesAndBinds(manifestID string, container *api.Container) (map[string]struct{}, []string) {
+func makeVolumesAndBinds(manifestId string, container *api.Container, podVolumes map[string]volumes.ExternalVolume) (map[string]struct{}, []string) {
 	volumes := map[string]struct{}{}
 	binds := []string{}
 	for _, volume := range container.VolumeMounts {
 		var basePath string
-		if volume.MountType == "HOST" {
+		if hostVol, ok := podVolumes[volume.Name]; ok {
 			// Host volumes are not Docker volumes and are directly mounted from the host.
-			basePath = fmt.Sprintf("%s:%s", volume.MountPath, volume.MountPath)
+			basePath = fmt.Sprintf("%s:%s", hostVol.GetPath(), volume.MountPath)
 		} else {
 			volumes[volume.MountPath] = struct{}{}
 			basePath = fmt.Sprintf("/exports/%s/%s:%s", manifestID, volume.Name, volume.MountPath)
@@ -355,6 +357,28 @@ func makePortsAndBindings(container *api.Container) (map[docker.Port]struct{}, m
 	return exposedPorts, portBindings
 }
 
+func (kl *Kubelet) mountExternalVolumes(manifest *api.ContainerManifest) (map[string]volumes.ExternalVolume, error) {
+	if kl.extVolumes == nil {
+		kl.extVolumes = make(map[string]volumes.ExternalVolume)
+	}
+	podVolumes := make(map[string]volumes.ExternalVolume)
+	for _, volume := range manifest.Volumes {
+		extVolume, err := volumes.CreateVolume(&volume)
+		if err != nil {
+			return nil, err
+		}
+		podVolumes[volume.Name] = extVolume
+		// Only mount the volume if it is not already available.
+		if _, ok := kl.extVolumes[volume.Name]; !ok {
+			extVolume.Mount()
+			// Host volumes are exposed to the pod, but not managed by the kubelet.
+			if volume.Type != "HOST" {
+				kl.extVolumes[volume.Name] = extVolume
+			}
+		}
+	}
+	return podVolumes, nil
+}
 // Parses image name including an tag and returns image name and tag
 // TODO: Future Docker versions can parse the tag on daemon side, see:
 // https://github.com/dotcloud/docker/issues/6876
@@ -379,9 +403,9 @@ func parseImageName(image string) (string, string) {
 }
 
 // Run a single container from a manifest. Returns the docker container ID
-func (kl *Kubelet) runContainer(manifest *api.ContainerManifest, container *api.Container, netMode string) (id DockerID, err error) {
+func (kl *Kubelet) runContainer(manifest *api.ContainerManifest, container *api.Container, podVolumes map[string]volumes.ExternalVolume, netMode string) (id DockerID, err error) {
 	envVariables := makeEnvironmentVariables(container)
-	volumes, binds := makeVolumesAndBinds(manifest.ID, container)
+	volumes, binds := makeVolumesAndBinds(manifest.ID, container, podVolumes)
 	exposedPorts, portBindings := makePortsAndBindings(container)
 
 	opts := docker.CreateContainerOptions{
@@ -684,7 +708,7 @@ func (kl *Kubelet) createNetworkContainer(manifest *api.ContainerManifest) (Dock
 		Ports:   ports,
 	}
 	kl.DockerPuller.Pull("busybox")
-	return kl.runContainer(manifest, container, "")
+	return kl.runContainer(manifest, container, nil, "")
 }
 
 func (kl *Kubelet) syncManifest(manifest *api.ContainerManifest, keepChannel chan<- DockerID) error {
@@ -703,6 +727,7 @@ func (kl *Kubelet) syncManifest(manifest *api.ContainerManifest, keepChannel cha
 		}
 	}
 	keepChannel <- netID
+	podVolumes, err := kl.mountExternalVolumes(manifest)
 	for _, container := range manifest.Containers {
 		containerID, err := kl.getContainerID(manifest, &container)
 		if err != nil {
@@ -716,7 +741,7 @@ func (kl *Kubelet) syncManifest(manifest *api.ContainerManifest, keepChannel cha
 				glog.Errorf("Failed to create container: %v skipping manifest %s container %s.", err, manifest.ID, container.Name)
 				continue
 			}
-			containerID, err = kl.runContainer(manifest, &container, "container:"+string(netID))
+			containerID, err = kl.runContainer(manifest, &container, podVolumes, "container:"+string(netID))
 			if err != nil {
 				// TODO(bburns) : Perhaps blacklist a container after N failures?
 				glog.Errorf("Error running manifest %s container %s: %v", manifest.ID, container.Name, err)
@@ -743,7 +768,7 @@ func (kl *Kubelet) syncManifest(manifest *api.ContainerManifest, keepChannel cha
 					glog.V(1).Infof("Failed to kill container %s: %v", containerID, err)
 					continue
 				}
-				containerID, err = kl.runContainer(manifest, &container, "container:"+string(netID))
+				containerID, err = kl.runContainer(manifest, &container, podVolumes, "container:"+string(netID))
 			}
 		}
 		keepChannel <- containerID
