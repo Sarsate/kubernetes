@@ -24,8 +24,11 @@ import (
 
 // All volume types are expected to implement this interface
 type ExternalVolume interface {
+	// Mounts the volume to a directory path.
 	Mount()
+	// Returns the directory path the volume is mounted to.
 	GetPath() string
+	// Unmounes the volume and removes traces of the Mount procedure.
 	UnMount()
 }
 
@@ -50,7 +53,7 @@ func createHostDirectoryVolume(volume *api.Volume) *HostDirectoryVolume {
 	return &HostDirectoryVolume{volume.Name, volume.Path}
 }
 
-// Interprets parameters passed in the API as a more robust internal structure
+// Interprets parameters passed in the API as an internal structure
 // with utility procedures for mounting.
 func CreateVolume(volume *api.Volume) (ExternalVolume, error) {
 	switch volume.Type {
