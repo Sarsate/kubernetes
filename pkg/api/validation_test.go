@@ -25,9 +25,9 @@ import (
 
 func TestValidateVolumes(t *testing.T) {
 	successCase := []Volume{
-		{Name: "abc"},
-		{Name: "123"},
-		{Name: "abc-123"},
+		{Name: "abc", Path: "/mnt/abc", Type: "HOST"},
+		{Name: "123", Path: "/mnt/123", Type: "HOST"},
+		{Name: "abc-123", Path: "/mnt/abc-123", Type: "HOST"},
 	}
 	names, errs := validateVolumes(successCase)
 	if len(errs) != 0 {
@@ -42,6 +42,7 @@ func TestValidateVolumes(t *testing.T) {
 		"name > 63 characters": {{Name: strings.Repeat("a", 64)}},
 		"name not a DNS label": {{Name: "a.b.c"}},
 		"name not unique":      {{Name: "abc"}, {Name: "abc"}},
+		"unsupported type":     {{Name: "abc", Type: "BADTYPE"}},
 	}
 	for k, v := range errorCases {
 		if _, errs := validateVolumes(v); len(errs) == 0 {
@@ -136,17 +137,6 @@ func TestValidateVolumeMounts(t *testing.T) {
 	if errs := validateVolumeMounts(successCase, volumes); len(errs) != 0 {
 		t.Errorf("expected success: %v", errs)
 	}
-
-	nonCanonicalCase := []VolumeMount{
-		{Name: "abc", Path: "/foo"},
-	}
-	if errs := validateVolumeMounts(nonCanonicalCase, volumes); len(errs) != 0 {
-		t.Errorf("expected success: %v", errs)
-	}
-	if nonCanonicalCase[0].MountPath != "/foo" {
-		t.Errorf("expected canonicalized values: %+v", nonCanonicalCase[0])
-	}
-
 	errorCases := map[string][]VolumeMount{
 		"empty name":      {{Name: "", MountPath: "/foo"}},
 		"name not found":  {{Name: "", MountPath: "/foo"}},
@@ -206,7 +196,8 @@ func TestValidateManifest(t *testing.T) {
 		{
 			Version: "v1beta1",
 			ID:      "abc",
-			Volumes: []Volume{{Name: "vol1"}, {Name: "vol2"}},
+			Volumes: []Volume{{Name: "vol1", Path: "/mnt/vol1", Type: "HOST"},
+					  {Name: "vol2", Path: "/mnt/vol2", Type: "HOST" }},
 			Containers: []Container{
 				{
 					Name:       "abc",
@@ -227,7 +218,6 @@ func TestValidateManifest(t *testing.T) {
 					},
 					VolumeMounts: []VolumeMount{
 						{Name: "vol1", MountPath: "/foo"},
-						{Name: "vol1", Path: "/bar"},
 					},
 				},
 			},

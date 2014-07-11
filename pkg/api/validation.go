@@ -83,6 +83,11 @@ func validateVolumes(volumes []Volume) (util.StringSet, errorList) {
 		} else {
 			allNames.Insert(vol.Name)
 		}
+		switch vol.Type {
+		case "HOST":
+		default:
+			allErrs.Append(makeInvalidError("Volume.Type", vol.Type))
+		}
 	}
 	return allNames, allErrs
 }
@@ -154,14 +159,7 @@ func validateVolumeMounts(mounts []VolumeMount, volumes util.StringSet) errorLis
 			allErrs.Append(makeNotFoundError("VolumeMount.Name", mnt.Name))
 		}
 		if len(mnt.MountPath) == 0 {
-			// Backwards compat.
-			if len(mnt.Path) == 0 {
-				allErrs.Append(makeInvalidError("VolumeMount.MountPath", mnt.MountPath))
-			} else {
-				glog.Warning("DEPRECATED: VolumeMount.Path has been replaced by VolumeMount.MountPath")
-				mnt.MountPath = mnt.Path
-				mnt.Path = ""
-			}
+			allErrs.Append(makeInvalidError("VolumeMount.MountPath", mnt.MountPath))
 		}
 	}
 	return allErrs
