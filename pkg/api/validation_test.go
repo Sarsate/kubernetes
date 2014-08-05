@@ -38,12 +38,13 @@ func TestValidateVolumes(t *testing.T) {
 		{Name: "123", Source: &VolumeSource{HostDirectory: &HostDirectory{"/mnt/path2"}}},
 		{Name: "abc-123", Source: &VolumeSource{HostDirectory: &HostDirectory{"/mnt/path3"}}},
 		{Name: "empty", Source: &VolumeSource{EmptyDirectory: &EmptyDirectory{}}},
+		{Name: "gcepd", Source: &VolumeSource{GCEPersistentDisk: &GCEPersistentDisk{"my-PD", "ext4", false}}},
 	}
 	names, errs := validateVolumes(successCase)
 	if len(errs) != 0 {
 		t.Errorf("expected success: %v", errs)
 	}
-	if len(names) != 4 || !names.HasAll("abc", "123", "abc-123", "empty") {
+	if len(names) != 5 || !names.HasAll("abc", "123", "abc-123", "empty", "gcepd") {
 		t.Errorf("wrong names result: %v", names)
 	}
 
