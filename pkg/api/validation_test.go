@@ -38,7 +38,7 @@ func TestValidateVolumes(t *testing.T) {
 		{Name: "123", Source: &VolumeSource{HostDirectory: &HostDirectory{"/mnt/path2"}}},
 		{Name: "abc-123", Source: &VolumeSource{HostDirectory: &HostDirectory{"/mnt/path3"}}},
 		{Name: "empty", Source: &VolumeSource{EmptyDirectory: &EmptyDirectory{}}},
-		{Name: "gcepd", Source: &VolumeSource{PersistentDisk: &PersistentDisk{"my-PD", "ext4", "1", "gce", false}}},
+		{Name: "gcepd", Source: &VolumeSource{GCEPersistentDisk: &GCEPersistentDisk{"my-PD", "ext4", 1, false}}},
 	}
 	names, errs := validateVolumes(successCase)
 	if len(errs) != 0 {
@@ -379,7 +379,14 @@ func TestValidateReplicationController(t *testing.T) {
 		},
 		Labels: validSelector,
 	}
-
+	invalidVolumePodTemplate := PodTemplate{
+		DesiredState: PodState{
+			Manifest: ContainerManifest{
+				Version: "v1beta1",
+				Volumes: []Volume{{Name: "gcepd", Source: &VolumeSource{GCEPersistentDisk: &GCEPersistentDisk{"my-PD", "ext4", 1, false}}}},
+			},
+		},
+	}
 	successCases := []ReplicationController{
 		{
 			JSONBase: JSONBase{ID: "abc"},
@@ -429,6 +436,13 @@ func TestValidateReplicationController(t *testing.T) {
 				ReplicaSelector: validSelector,
 			},
 		},
+		"read-write presistent disk": {
+			JSONBase: JSONBase{ID: "abc"},
+			DesiredState: ReplicationControllerState{
+				ReplicaSelector: validSelector,
+				PodTemplate:     invalidVolumePodTemplate,
+			},
+		},
 		"negative_replicas": {
 			JSONBase: JSONBase{ID: "abc"},
 			DesiredState: ReplicationControllerState{
@@ -447,6 +461,7 @@ func TestValidateReplicationController(t *testing.T) {
 			if !strings.HasPrefix(field, "desiredState.podTemplate.") &&
 				field != "id" &&
 				field != "desiredState.replicaSelector" &&
+				field != "GCEPersistentDisk.ReadOnly" &&
 				field != "desiredState.replicas" {
 				t.Errorf("%s: missing prefix for: %v", k, errs[i])
 			}

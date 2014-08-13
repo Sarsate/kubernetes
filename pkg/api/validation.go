@@ -62,9 +62,9 @@ func validateSource(source *VolumeSource) errs.ErrorList {
 		numVolumes++
 		//EmptyDirs have nothing to validate
 	}
-	if source.PersistentDisk != nil {
+	if source.GCEPersistentDisk != nil {
 		numVolumes++
-		allErrs.Append(validatePersistentDisk(source.PersistentDisk)...)
+		allErrs = append(allErrs, validateGCEPersistentDisk(source.GCEPersistentDisk)...)
 	}
 	if numVolumes != 1 {
 		allErrs = append(allErrs, errs.NewInvalid("", source))
@@ -80,16 +80,16 @@ func validateHostDir(hostDir *HostDirectory) errs.ErrorList {
 	return allErrs
 }
 
-func validatePersistentDisk(PD *PersistentDisk) errorList {
-	allErrs := errorList{}
+func validateGCEPersistentDisk(PD *GCEPersistentDisk) errs.ErrorList {
+	allErrs := errs.ErrorList{}
 	if PD.PDName == "" {
-		allErrs.Append(makeNotFoundError("PD.PDName", PD.PDName))
+		allErrs = append(allErrs, errs.NewInvalid("PD.PDName", PD.PDName))
 	}
-	if PD.Provider == "" {
-		allErrs.Append(makeNotFoundError("PD.Provider", PD.PDName))
+	if PD.FSType == "" {
+		allErrs = append(allErrs, errs.NewInvalid("PD.FSType", PD.FSType))
 	}
-	if PD.Provider != "gce" {
-		allErrs.Append(makeInvalidError("PD.Provider", PD.PDName))
+	if PD.Partition < 0 || PD.Partition > 255 {
+		allErrs = append(allErrs, errs.NewInvalid("PD.Partition", PD.Partition))
 	}
 	return allErrs
 }
@@ -308,5 +308,17 @@ func ValidateReplicationController(controller *ReplicationController) errs.Error
 		allErrs = append(allErrs, errs.NewInvalid("desiredState.replicas", controller.DesiredState.Replicas))
 	}
 	allErrs = append(allErrs, ValidateManifest(&controller.DesiredState.PodTemplate.DesiredState.Manifest).Prefix("desiredState.podTemplate.desiredState.manifest")...)
+	allErrs = append(allErrs, ValidateReadOnlyPersistentDisks(controller.DesiredState.PodTemplate.DesiredState.Manifest.Volumes)...)
 	return allErrs
+}
+func ValidateReadOnlyPersistentDisks(volumes []Volume) []error {
+	allErrs := errs.ErrorList{}
+	for _, vol := range volumes {
+		if vol.Source.GCEPersistentDisk != nil {
+			if vol.Source.GCEPersistentDisk.ReadOnly == false {
+				allErrs = append(allErrs, errs.NewInvalid("GCEPersistentDisk.ReadOnly", false))
+			}
+		}
+	}
+	return []error(allErrs)
 }
